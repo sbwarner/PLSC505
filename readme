@@ -1,0 +1,13 @@
+PLSC 505 - POLITICAL NETWORKS
+PROF: BRUCE DESMARAIS
+SETH WARNER
+
+IN THIS FOLDER...
+
+Neal (2020).pdf - PDF of signed cosponsorship network article, "A sign of the times? Weak and strong polarization in the U.S. Congress, 1973-2016."
+
+Replication and Extension.pdf - Write-up of main assignment for Political Networks class, updated for new deadlines
+
+Replications and Plots.R - R code for Part 2 of the main assignment, replicating Neal (2020) and plotting two of his networks
+
+a_sign_of_the_times.xlsx - Adjacency matrices for House and Senate members, 1973 - 2016
