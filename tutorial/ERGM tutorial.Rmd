@@ -1,0 +1,140 @@
+---
+title: "Week 12 Tutorial - ERGMs - Seth Warner"
+output: html_notebook
+---
+
+# 1. Importing the data
+
+This tutorial uses a network adapted from Zachary Neal's recent paper, "A Sign of the Times," which appeared in *Social Networks* earlier this year.
+
+Neal creates signed adjacency matrices for each chamber-session of Congress from 1973 onward. (Recall that signed networks have both positive and negative ties.) In these matrices, a tie indicates that two legislators cosponsored bills more (+) or less (-) than would be expected if cosponsorship were distributed evenly across dyads for that chamber-session.
+
+Today, I use only positive ties for the Senate Republican caucus in the most recent session in his data, that of the 114th Congress (2015-16).
+
+We begin by loading Neal's adjacency matrix, and coercing it into a network object. 
+
+We also import two variables that we will use as vertex attribute. First is the NOMINATE score for each senator. This is a measure of legislative roll-call ideology, with higher scores indicating greater conservatism. Second is the numerical code for the US Census subregion of the senator's homestate. We'll use this to group senators geographically.
+
+```{r}
+library(readxl)
+library(network)
+library(ergm)
+library(sna)
+detach(package:igraph)
+
+# read in adjacency matrix
+cosponsorship <- read_xlsx("~/Penn State/Spring 2020/Networks/cosponsorship_tutorial.xlsx", sheet = "cosponsorship")
+
+# Clean from Excel
+cosponsorship <- cosponsorship[,-1] 
+cosponsorship <- apply(cosponsorship, 2, as.numeric) #Change cells to numeric
+rownames(cosponsorship) <- colnames(cosponsorship)
+
+# Read in attributes
+attributes <- read_xlsx("~/Penn State/Spring 2020/Networks/cosponsorship_tutorial.xlsx", sheet = "attributes")
+
+# Create network and vertex attributes
+SenGOP <- as.network.matrix(cosponsorship, directed = F)
+network.vertex.names(SenGOP) <- rownames(cosponsorship)
+SenGOP%v%"ideology" <- attributes$Nominate
+SenGOP%v%"subregion" <- attributes$Subregion
+list.vertex.attributes(SenGOP)
+```
+
+
+# 2. Plot data
+
+Cosponsorship is important because it signals a legislator's issue priorities. Legislators will also sign on to one another's bills as a log-rolling technique, or to burnish their ideological reputation.
+
+We might start our investigation into cosponorship patterns by plotting out the network. Because all the senators represented are copartisans, the network contains many edges, and the plot is hard to read.
+
+So I create a plot without edges, trusting the Fruchterman-Reingold algorithm to provide a general sense of which senators are central and peripheral to the cosponsorship network.
+
+The plot we see lines up pretty well with past research. Senior legislators tend not to cosponsor much, because they tend to possess ample agenda-setting power from their committee chairs. As such, veterans like Orin Hatch, Chuck Grassley, and Mitch McConnell appear far away from the plot's epicenter in the center right. We also know the ideological distance reduces cosponsorship, and see moderates Lisa Murkowski and Susan Collins set apart from their colleagues. Finally, we might suspect that personal preferences play into cosponsorship: some legislators may sign onto anything, and others may be very particular. It makes sense then that "distinctive" legislators like libertarian Rand Paul and sometime-Trump critics Ben Sasse and Jeff Flake are on the outside of the plot.
+
+```{r}
+set.seed(1986)
+plot.network.default(SenGOP, main="Senate GOP Network (114th Congress)",
+                     label = network.vertex.names(SenGOP), thresh = 5)
+```
+
+# Basic ERGM
+
+Of course, the cosponsorship process contains lots of endogeneity. Running a simple logit to explain cosponorship dyads would result in correlated residuals.
+
+So we turn to an exponential random graph model (ERGM). ERGM accounts for endogeneity in the tie-forming process by using Markov chain Monte Carlo algorithm to simulate graphs using the same node attributes.
+
+This creates a larger "sample" of graphs, which we can use to estimate the effect of some attribute on the likelihood of a tie $Y_{i,j}$.
+
+Let's begin by creating an ERGM model with no attributes. This is the similar to estimating a logit or OLS with no variables... we're only looking at the intercept.
+
+```{r}
+ergm1 <- ergm(SenGOP ~ edges)
+summary(ergm1)
+```
+
+
+The model predicts the logged-likelihood of tie $Y_{i,j}$, using maximum likelihood estimates for each parameter. Here, edges is akin to the "intercept." We can read the results as:
+
+"The logged-odds of tie $Y_{i,j}$ occuring is equal to:
+
+0.37 * change in the number of ties"
+
+So if we have one more tie, the odds of $Y_{i,j}$ increases by exp(0.37) = 1.45 times.
+
+**
+
+# 4. ERGM with attributes
+
+Now let's add some node attributes. Specifying our ERGM takes some work; we only have 54 observations for each attribute, but the MCMC will consider thousands of different dyadic ties across many possible networks.
+
+As such, we need to specify our attributes *dyadically* based on how we expect them to drive tie formation.
+
+I use the **absdiff** term to find the difference in the ideologies of each dyadic pair of Senators. Then, I use the **nodematch** command to create a binary for whether each pair is from the same US Census subregion. A full list of terms is available here:
+
+https://cran.r-project.org/web/packages/ergm/vignettes/ergm-term-crossRef.html#term_nodematch_1
+
+```{r}
+ergm2 <- ergm(SenGOP ~ edges + absdiff('ideology') + nodematch('subregion'))
+summary(ergm2)
+```
+
+The results we get match with theoretical expectations. As the difference in ideology increases, the logged-odds of a cosponsorship tie $Y_{i,j}$ decreases. On the contrary, senators from the same subregion are more likely to cosponsor frequently.
+
+
+**
+
+# 5. Simulating networks with ERGM
+
+Just as we used MCMC to create simulations for our ERGM model, we can capture those simulations as an object and explore them individually. The **simulate** command will allow you to choose the number of simulations you want to conduct, and save the resulting graphs in a network list object.
+
+Because it's a list object, to acccess these graphs later, you'll need to specify the one you want using double brackets [[]] after the object name.
+
+Here, we check out a simulated cosponsorship network. This one looks a little more diffused than our original network, but still we can see leaders like Cornyn, moderates like Colins, and (quasi-)mavericks like Flake, Paul, Sasse, and Alexander on the outside of the plot.
+
+```{r}
+set.seed(1922)
+SenGOP.sim <- simulate(ergm2,nsim=2)
+plot.network.default(SenGOP.sim[[1]], main="Simulated Cosponorship Network",
+                     label = SenGOP.sim[[1]] %v% "vertex.names", thresh = 5)
+
+```
+
+
+# 6. ERGM fit diagnostics
+
+Finally, we may wish to conduct basic model diagnostics. Using the **gof** and **plot** commands, we can examine a small handful of goodness-of-fit indicators.
+
+The rightmost panel indicates that the values for edges, difference in ideology, and subregion match in my observed ties are similar to those found in the simulated networks. This is good. The center-right panel shows that the minimal geodesic distance between Senators is never >2, and that the proportion of dyads that are 1 or 2 is similar between my observed network and the simulated ones.
+
+However, in the two left-hand panels, we see that the model's simulations do not fit my observed values in terms of the proportion of edges with shared partners, or the distribution of degree centrality among nodes.
+
+These latter two diagnostics suggest that my model is not a great fit, and provide  suggestive evidence  for why the simulated graph in the last section was so evenly spaced. 
+
+
+```{r}
+ergm2.gof <- gof(ergm2)
+plot(ergm2.gof)
+```
+
+Of course, my model was not destined to be especially accurate: it only used two, easily accessible attributes. I recommend one of the application readings for this week, Bratton and Rousse (2011), as providing an excellent ERGM-driven analysis into the correlates of bill cosponsorship.
