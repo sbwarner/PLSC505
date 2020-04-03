@@ -1,0 +1,227 @@
+---
+title: "Week 12 Tutorial - ERGMs - Seth Warner"
+output: html_notebook
+---
+
+# 1. INTRO
+
+This tutorial uses a network adapted from Zachary Neal's recent paper, "A Sign of the Times," which appeared in *Social Networks* earlier this year.
+
+Neal creates signed adjacency matrices for each chamber-session of Congress from 1973 onward. (Recall that signed networks have both positive and negative ties.) In these matrices, a tie indicates that two legislators cosponsored bills more (+) or less (-) than would be expected if cosponsorship were distributed evenly across dyads for that chamber-session.
+
+Today, I use only positive ties for the U.S. Senate network in the 114th Congress (2015-16), the most recent in Neal's dataset. 
+
+At a few points, I'll be taking "shortcuts" to make this network compatible with our analysis, but I'll be sure to let you know what those are, and to explain alternatives that are more research-appropriate.
+
+***
+
+# DATA IMPORT AND CLEANING
+
+We begin by loading Neal's adjacency matrix, and coercing it into a network object. 
+
+We also import four vertex attributes that we will use as covariates. 
+
+First is a dummy for the senator's party (GOP = 1). Second, I include the NOMINATE score for each senator. This is a measure of legislative roll-call ideology, with higher scores indicating greater conservatism. Third, I include their number of years of seniority in the Senate. Fourth, I log the numerical code for the US Census subregion of the senator's homestate. We'll use this to group senators geographically.
+
+This is also where I'll take my first "shortcut," thinning the network to only 30 randomly-selected senators. There is no substantive reason for this. It will just make our code run more quickly, and our plots more interpretable.
+
+```{r}
+library(readxl)
+library(network)
+library(ergm)
+library(sna)
+#detach(package:igraph)
+
+# Import adjacency matrix
+cosponsorship <- read_xlsx("~/Penn State/Spring 2020/Networks/tutorial data1.xlsx", 
+                           sheet = "cosponsorship")
+# Clean from Excel
+cosponsorship <- cosponsorship[,-1] 
+cosponsorship <- apply(cosponsorship, 2, as.numeric) #Change cells to numeric
+rownames(cosponsorship) <- colnames(cosponsorship) #assign rownames
+cosponsorship[cosponsorship==-1] <- 0 #remove negative signs
+
+# Read in covariates
+attributes <- read_xlsx("~/Penn State/Spring 2020/Networks/tutorial data1.xlsx", 
+                        sheet = "attributes")
+
+# The first "shortcut" I take is to narrow the network to 30 senators. There is no substantive rationale for this;
+# it will just make running code and interpreting plots easier.
+set.seed(1776)
+senators <- sample(1:100,30)
+
+cosponsorship <- cosponsorship[senators,senators]
+attributes <- attributes[senators,]
+
+# Create network and vertex attributes
+Senate <- as.network.matrix(cosponsorship, directed = F)
+network.vertex.names(Senate) <- rownames(cosponsorship)
+Senate%v%"gop" <- attributes$gop
+Senate%v%"ideology" <- attributes$nominate
+Senate%v%"seniority" <- attributes$seniority
+Senate%v%"subregion" <- attributes$subregion
+```
+
+***
+
+# PLOT DATA
+
+Cosponsorship is important because it signals a legislator's issue priorities. Legislators will also sign on to one another's bills as a log-rolling technique, or to burnish their ideological reputation.
+
+We might start our investigation into cosponorship patterns by plotting out the network. Because all the senators represented are copartisans, the network contains many edges, and the plot is hard to read.
+
+So I create a plot without edges, trusting the Fruchterman-Reingold algorithm to provide a general sense of which senators are central and peripheral to the cosponsorship network.
+
+The plot we see lines up pretty well with past research. Senior legislators tend not to cosponsor much, because they tend to possess ample agenda-setting power from their committee chairs. As such, veterans like Orin Hatch, Chuck Grassley, and Mitch McConnell appear far away from the plot's epicenter in the center right. We also know the ideological distance reduces cosponsorship, and see moderates Lisa Murkowski and Susan Collins set apart from their colleagues. Finally, we might suspect that personal preferences play into cosponsorship: some legislators may sign onto anything, and others may be very particular. It makes sense then that "distinctive" legislators like libertarian Rand Paul and sometime-Trump critics Ben Sasse and Jeff Flake are on the outside of the plot.
+
+```{r}
+set.seed(1986)
+plot.network.default(Senate, main="Partial Senate Network (114th Congress)",
+                     label = network.vertex.names(Senate))
+```
+
+***
+
+# ERGM
+
+Onto what you came here for. We may wish to know more about the data-generating process behind cosponsorship networks.
+But the cosponsorship process contains lots of endogeneity. Running a simple logit to explain cosponorship rates would result in correlated residuals.
+
+So we turn to an exponential random graph model. ERGM accounts for endogeneity in the tie-forming process by considering all possible sets of ties. At higher levels, it can even use Markov chain Monte Carlo simulations to examine tryadic+ relations, but we'll keep it simple for now and stick with potential ties $Y_{i,j}$.
+
+The first model we'll run is an ERGM with no attributes. This is the similar to estimating a logit or OLS with no variables... we're only looking at the intercept.
+
+```{r}
+ergm <- ergm(Senate ~ edges)
+summary(ergm)
+```
+
+
+The results can be read like a logit. For each additional edge, the log-likelihood of tie $Y_{i,j}$ decreases by 0.7985.
+If we convert this to a probability, we get the fraction of possible ties that exist: 31.03%.
+Remember, that's just another way of describing the network density = 0.3103.
+
+```{r}
+exp(???0.7985)/(1 + exp(???0.7985))
+network.density(Senate)
+```
+
+Now let's add some variables. This takes a little forethought. Although we have 30 senators, there are 30 X 30 - 30 = 870 possible ties in our network. As such, we need to specify our variables *dyadically* based on how we expect them to drive tie formation.
+
+This requires a few specialized commands. I use two of the simplest, absdiff and nodematch. Absdiff takes the absolute difference of two vertex attributes -- here, a dyad's difference in ideology and seniority -- and nodematch produces a binary for whether the attribute is the same for both vertices. I use it to match members from the same party (gop) and geographic subregion.
+
+A full list of terms is available here:
+
+https://cran.r-project.org/web/packages/ergm/vignettes/ergm-term-crossRef.html#term_nodematch_1
+
+
+```{r}
+ergm2 <- ergm(Senate ~ edges + absdiff('ideology') + nodematch('gop') + 
+                + absdiff('seniority') + nodematch('subregion'))
+summary(ergm2)
+exp(ergm2$coef)
+```
+
+
+What does this model tell us? Again, we can read the output like a logit. 
+
+If two senators are from the same party or subregion, it increases their log-likelihood of cosponsoring frequently by 3.84 and 1.61 respectively. Converted to odds ratios, copartisanship and same subregion multiply odds of a tie by 46.3 and 5.0 times.
+
+Differences in seniority appear to make cosponsorship more likely. For each additional year of seniority between onesenator and another, we see the log-likelihood of frequent cosponsorship increase by 0.03 / the odds increase by 1.03 times.
+
+Finally, ideological distance decreases the likelihood of cosponsorship. For each 0.1 of ideological distance between senators, the log-likelihood of frequent cosponsorship decreases by -0.36 / the odds are multiplied by 0.25.
+
+
+**
+
+# SIMULATIONS
+
+The ERGM package allows us to create simulations of our model (as specified) using the Markov chain Monte Carlo algorithm.The **simulate** command will allow you to choose the number of simulations you want to conduct, and save the resulting graphs in a network list object.
+ 
+Because it's a list object, to acccess these graphs later, you'll need to specify the one you want using double brackets [[]] after the object name.
+
+The graph we create looks reasonably like the "true" graph, particularly in that it has Democratic and Republican clusters.Heidi Heitkamp of North Dakota is the only Democrat to link with a Republican, which is plausible given that she's the mostmoderate Democrat of the 15 in the network, and that she's from a subregion that mostly sends Republicans to Congress.
+
+It is a surprise, however, to see Bill Cassidy, Republican of Louisiana, as Heitkamp's cosponsorship partner. 
+
+```{r}
+set.seed(2020)
+Senate.sim <- simulate(ergm2,nsim=2)
+set.seed(2020)
+plot.network.default(Senate.sim[[1]], main="Simulated Cosponorship Network",
+                     label = Senate.sim[[1]] %v% "vertex.names")
+```
+
+***
+
+# MODEL FIT
+
+Finally, we may wish to conduct basic model diagnostics. Using the **gof** and **plot** commands, we can examine a small handful of goodness-of-fit indicators.
+
+First, we use the **plot** command to see the distribution of means values for each covariate in the networks created by our simulation. The black line indicates the "true" mean values in our original network. As we can see, the simulation produced networks with mean values that were very close to those in our original network.
+
+
+```{r}
+set.seed(1969) #Again go Mets
+ergm2.gof <- gof(ergm2)
+plot(ergm2.gof)
+```
+
+The other panels examine the distributions of node degree centrality, shared partners, and geodesic distance in our "true" network and among our simulated networks.
+
+For degree centrality, the simulations look pretty good, although except they underestimated the number of "lonely" senators with only one, two, or three ties. Stemming from this, it looks like the simulations rarely put nodes "far apart" (geodesic distances >=5), but they model the proportions of nodes at short distances pretty well.
+
+The one area where the simulations do particularly poorly is in shared partners. The distribution of shared partners among simulated networks is leftward skewed: that is, the simulations systemically underestimate the number of shared partners relative to the "true" values.
+
+***
+
+# DEPENDENCE TERMS
+
+So far, the ERGM models I have created considered how ties are formed relative to all ties that *could* be formed. However, I have not yet modeled the interdependencies between ties: that is, how ties form relative to *other* ties that are being formed.
+ 
+This is slightly more complex. Whereas the previous models estimated a logit, here, I must use MCMC simulations to create a sample of networks, from which I estimate the conditions under which tie $Y_{i,j}$ is realized.
+ 
+MCMC simulations do not converge when network densities are > 0.20. Our network's is too high, at 0.31. So I take my second "shortcut," randomly eliminating ties with prob = 0.5. 
+
+(Note: The "right" way to do this would be to return to the original data and increase the cosponsorship threshold needed for tie creation.)
+
+To make sure I didn't lose inter-party ties, I plot this thinned network and find Amy Klobuchar still working across the aisle. I then check the network density. At 0.23, I may have gotten a bad randomization, but I'll try my luck and roll with it.
+
+```{r}
+set.seed(2015) #114th Congress
+thin <- sample(0:1,sum(cosponsorship),replace=T)
+thin.adj <- cosponsorship
+thin.adj[thin.adj==1] <- thin
+
+Senate.thinned <- as.network.matrix(thin.adj, directed = F)
+network.vertex.names(Senate.thinned) <- rownames(cosponsorship)
+Senate.thinned%v%"gop" <- attributes$gop
+Senate.thinned%v%"ideology" <- attributes$nominate
+Senate.thinned%v%"seniority" <- attributes$seniority
+Senate.thinned%v%"subregion" <- attributes$subregion
+
+plot.network.default(Senate.thinned, main="Senate Network (114th Congress)",
+                     label = network.vertex.names(Senate))
+network.density(Senate.thinned)
+```
+
+
+The dependence term I add is for an edgewise shared partner. That is, in addition to my prior covariates, I estimate the likelihood of a tie $Y_{i,j}$ forming given the number of other nodes that they are commonly tied to.
+
+```{r}
+set.seed(2020)
+ergm3 <- ergm(Senate.thinned ~ edges + gwesp(0,fixed=T) + absdiff('ideology') + nodematch('gop') 
+                + absdiff('seniority') + nodematch('subregion'))
+summary(ergm3)
+exp(ergm3$coef)
+```
+
+Curiously, adding edgewise shared partners to the model does not seem to make a difference. Its coefficient is not significant, but to set that aside even, I am surprised to see it point in the negative direction. To interpret the coefficient quantitatively, it suggests that for each edgewise shared partner between nodes {i,j}, the log-likelihood of a tie between them drops by 0.13 / the odds are multiplied by 0.88.
+
+The other coefficients, meanwhile, are significant and similar in magnitude to the logits we created before.
+Copartisanship increases the log-likelihood of a tie by 3.04  / multiplies the odds by 20.8.
+If two senators are from the same subregion, the log-likelihood of a tie increases by 1.2 / the odds are multiplied by 3.33.
+Each year of seniority separating two senaors increases the log-likelihood of a tie by 0.03 / multiplies the odds by 1.03.
+A 0.1 difference in ideology reduces the log-likelihood of a tie by 0.38 / multiplies the odds by 0.22.
+
+
